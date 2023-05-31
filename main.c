@@ -18,6 +18,7 @@ typedef struct Statement Statement;
 typedef struct Row Row;
 typedef struct Table Table;
 typedef struct Pager Pager;
+typedef struct Cursor Cursor;
 
 typedef enum
 {
@@ -79,6 +80,14 @@ struct Table
     Pager *pager;
 };
 
+struct Cursor
+{
+    Table *table;
+    uint32_t rowNum;
+    bool EOT; // Indicates a position one past the last element
+};
+
+
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
 const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
@@ -104,17 +113,50 @@ static ExecuteResult executeSelectStatement(Statement *statement, Table *table);
 static ExecuteResult executeStatement(Statement *statement, Table *table);
 static void serializeRow(Row *source, void *dest);
 static void deserializeRow(void *source, Row *dest);
-static void *rowSlot(Table *table, uint32_t rowNum);
+static void *cursorValue(Cursor *cursor);
 static Pager *openPager(const char *fn);
 static void *getPage(Pager *pager, uint32_t pageNum);
 static void flushPager(Pager *pager, uint32_t pageNum, uint32_t size);
 static Table *openDatabase(const char *fn);
 static void closeDatabase(Table *table);
+static Cursor *tableStart(Table *table);
+static Cursor *tableEnd(Table *table);
+static void cursorAdvance(Cursor *cursor);
 static void printRow(Row *row);
 
 static void printRow(Row *row)
 {
     printf("(%d, %s, %s)\n", row->id, row->username, row->email);
+}
+
+static Cursor *tableStart(Table *table)
+{
+    Cursor *cursor = malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->rowNum = 0;
+    cursor->EOT = false;
+
+    return cursor;
+}
+
+static Cursor *tableEnd(Table *table)
+{
+    Cursor *cursor = malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->rowNum = table->numRows;
+    cursor->EOT = true;
+
+    return cursor;
+}
+
+static void cursorAdvance(Cursor *cursor)
+{
+    cursor->rowNum += 1;
+    if (cursor->rowNum >= cursor->table->numRows)
+    {
+        cursor->EOT = true;
+    }
+    
 }
 
 static Pager *openPager(const char *fn)
@@ -271,10 +313,11 @@ static void closeDatabase(Table *table)
     free(table);
 }
 
-static void *rowSlot(Table *table, uint32_t rowNum)
+static void *cursorValue(Cursor *cursor)
 {
+    uint32_t rowNum = cursor->rowNum;
     uint32_t pageNum = rowNum / ROWS_PER_PAGE;
-    void *page = getPage(table->pager, pageNum);
+    void *page = getPage(cursor->table->pager, pageNum);
     uint32_t rowOffset = rowNum % ROWS_PER_PAGE;
     uint32_t byteOffset = rowOffset * ROW_SIZE;
     return page + byteOffset;
@@ -400,20 +443,30 @@ static ExecuteResult executeInsertStatement(Statement *statement, Table *table)
     {
         return EXECUTE_TABLE_FULL;
     }
+
     Row *rowToInsert = &(statement->rowToInsert);
-    serializeRow(rowToInsert, rowSlot(table, table->numRows));
+    Cursor *cursor = tableEnd(table);
+
+    serializeRow(rowToInsert, cursorValue(cursor));
     table->numRows += 1;
+
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 
 static ExecuteResult executeSelectStatement(Statement *statement, Table *table)
 {
+    Cursor *cursor = tableStart(table);
     Row row;
-    for (uint32_t i = 0; i < table->numRows; i++)
+    while (!(cursor->EOT))
     {
-        deserializeRow(rowSlot(table, i), &row);
+        deserializeRow(cursorValue(cursor), &row);
         printRow(&row);
+        cursorAdvance(cursor);
     }
+
+    free(cursor);
+
     return EXECUTE_SUCCESS;
 }
 
